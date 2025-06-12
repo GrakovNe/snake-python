@@ -39,11 +39,11 @@ class GameEngine:
 
         # базовая система вознаграждений
         if self.state.done:
-            reward = -1.0                       # смерть
+            reward = -10.0                       # смерть
         elif len(self.state.snake) > prev_len:
-            reward = 1.0                        # съели еду
+            reward = 5.0                        # съели еду
         else:
-            reward = -0.01                      # обычный шаг
+            reward = -0.1                      # обычный шаг
 
         return (
             self.state.grid(),
