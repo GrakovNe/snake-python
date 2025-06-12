@@ -61,7 +61,7 @@ for episode in range(1, EPISODES + 1):
         score += reward
         steps += 1
 
-    print(f"Episode {episode:5d}: steps={steps:4d}  score={score:6.2f}")
+    print(f"Episode {episode:5d}: steps={steps:4d} len={len(snake):3d}  score={score:6.2f}")
 
     if episode % SAVE_EVERY == 0:
         w_path = WEIGHTS_DIR / f"snake_{episode:05d}.pt"
