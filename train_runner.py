@@ -1,71 +1,87 @@
 import os
-import multiprocessing
+import random
+from collections import deque
 from pathlib import Path
 
 import torch
+import numpy as np
 
-from agent.dqn_agent import DQNAgent  # проверьте: файл dqn_agent.py
+from agent.dqn_agent import DQNAgent
 from engine.game_engine import GameEngine
 from common.game_state import GameState
 from common.direction import Direction
 
-# -------------------- параметры обучения --------------------
-BOARD_SIZE = 30
-EPISODES   = 10_000
-MAX_STEPS  = 1_000        # тайм‑аут одного эпизода
-SAVE_EVERY = 200          # периодичность сохранений
+# ————————————————————————————————————————————————
+# Настройки обучения
+# ————————————————————————————————————————————————
+BOARD_SIZE     = 32
+EPISODES       = 10_000
+MAX_STEPS_EP   = 1000
+NUM_ENVS       = min(8, os.cpu_count() or 1)
+SAVE_EVERY     = 200
+STUCK_LIMIT    = 200    # прерывать эпизод, если змея не ест слишком долго
+TRAIN_EVERY    = 4      # каждый N шагов — обучение
 
 WEIGHTS_DIR = Path("weights")
 WEIGHTS_DIR.mkdir(exist_ok=True)
 
-# -------------------- выбор устройства ----------------------
-if torch.backends.mps.is_available():
-    device = torch.device("mps")  # Apple Silicon / Metal
-elif torch.cuda.is_available():
-    device = torch.device("cuda")
-else:
-    device = torch.device("cpu")
+# ————————————————————————————————————————————————
+# Устройство
+# ————————————————————————————————————————————————
+device = (
+    torch.device("mps") if torch.backends.mps.is_available()
+    else torch.device("cuda") if torch.cuda.is_available()
+    else torch.device("cpu")
+)
 print("Device:", device)
 
-# -------------------- CPU‑параллелизм -----------------------
-num_cores = multiprocessing.cpu_count()
-torch.set_num_threads(num_cores)
-torch.set_num_interop_threads(num_cores)
-os.environ["OMP_NUM_THREADS"] = str(num_cores)
-os.environ["MKL_NUM_THREADS"] = str(num_cores)
-print(f"CPU threads set to {num_cores}")
+# ————————————————————————————————————————————————
+# Инициализация
+# ————————————————————————————————————————————————
+agent = DQNAgent(size=BOARD_SIZE, device=device)
+env = GameEngine(GameState(size=BOARD_SIZE), agent)
 
-# -------------------- инициализация -------------------------
-state_proto = GameState(BOARD_SIZE)
-agent       = DQNAgent(size=BOARD_SIZE, device=device)
-engine      = GameEngine(state_proto, agent)
+# ————————————————————————————————————————————————
+# Цикл обучения
+# ————————————————————————————————————————————————
+scores = deque(maxlen=100)
 
-# -------------------- цикл эпизодов -------------------------
-for episode in range(1, EPISODES + 1):
-    grid, snake, food = engine.reset()
-    done  = False
+for ep in range(1, EPISODES + 1):
+    grid, snake, food = env.reset()
+    state = agent._encode_state(grid, snake, food)
+    total_reward = 0.0
     steps = 0
-    score = 0.0
+    since_last_food = 0
+    prev_len = len(snake)
 
-    while not done and steps < MAX_STEPS:
-        state_t = agent._encode_state(grid, snake, food)
-        move    = agent.get_move(grid, snake, food)
-        action  = DQNAgent.ACTIONS.index(move)
+    for _ in range(MAX_STEPS_EP):
+        move = agent.get_move(grid, snake, food)
+        grid, snake, food, reward, done = env.step(move)
+        next_state = agent._encode_state(grid, snake, food)
 
-        grid, snake, food, reward, done = engine.step(move)
-        next_state_t = agent._encode_state(grid, snake, food)
+        agent.remember(state, agent.ACTIONS.index(move), reward, next_state, done)
 
-        agent.remember(state_t, action, reward, next_state_t, done)
-        agent.train_step()
+        if agent._steps_done % TRAIN_EVERY == 0:
+            agent.train_step()
 
-        score += reward
+        state = next_state
+        total_reward += reward
         steps += 1
 
-    print(f"Episode {episode:5d}: steps={steps:4d} len={len(snake):3d}  score={score:6.2f}")
+        # Проверка застоя
+        if len(snake) > prev_len:
+            since_last_food = 0
+            prev_len = len(snake)
+        else:
+            since_last_food += 1
 
-    if episode % SAVE_EVERY == 0:
-        w_path = WEIGHTS_DIR / f"snake_{episode:05d}.pt"
-        agent.save(w_path)
-        print("Saved", w_path)
+        if done or since_last_food > STUCK_LIMIT:
+            break
 
-print("Training finished.")
+    scores.append(total_reward)
+    avg_score = np.mean(scores)
+
+    print(f"Episode {ep:5}: steps={steps:4} len={len(snake):3} score={total_reward:6.2f}  avg={avg_score:6.2f}")
+
+    if ep % SAVE_EVERY == 0:
+        agent.save(WEIGHTS_DIR / f"snake_{ep:05}.pt")

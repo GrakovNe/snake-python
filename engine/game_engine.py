@@ -28,7 +28,7 @@ class GameEngine:
         return self.state.grid(), self.state.snake[:], self.state.food
 
     def step(
-            self, direction
+        self, direction
     ) -> Tuple[List[List[int]], List[Tuple[int, int]], Tuple[int, int], float, bool]:
         """
         Выполняет один ход.
@@ -46,16 +46,15 @@ class GameEngine:
         dist_after = abs(new_head[0] - food_pos[0]) + abs(new_head[1] - food_pos[1])
 
         if self.state.done:
-            reward = -5.0
+            reward = -10.0
         elif len(self.state.snake) > prev_len:
-            reward = 5.0
+            reward = +10.0
         else:
-            reward = 0
-
+            reward = -0.01
             if dist_after < dist_before:
-                reward += 0.1
+                reward += 0.2
             elif dist_after > dist_before:
-                reward -= 0.1
+                reward -= 0.2
 
         return (
             self.state.grid(),
