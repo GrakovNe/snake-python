@@ -120,3 +120,11 @@ class DQNAgent(Agent):
                     s[0, 3, y, x] = 1.0
 
         return s
+
+    def save(self, path: str | Path):
+        torch.save(self.policy.state_dict(), Path(path))
+
+    def load(self, path: str | Path):
+        sd = torch.load(Path(path), map_location=self.device)
+        self.policy.load_state_dict(sd)
+        self.target.load_state_dict(sd)
