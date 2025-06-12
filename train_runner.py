@@ -20,7 +20,7 @@ MAX_STEPS_EP   = 1000
 NUM_ENVS       = min(8, os.cpu_count() or 1)
 SAVE_EVERY     = 200
 STUCK_LIMIT    = 200    # прерывать эпизод, если змея не ест слишком долго
-TRAIN_EVERY    = 4      # каждый N шагов — обучение
+TRAIN_EVERY    = 1
 
 WEIGHTS_DIR = Path("weights")
 WEIGHTS_DIR.mkdir(exist_ok=True)

@@ -48,7 +48,7 @@ class GameEngine:
         if self.state.done:
             reward = -10.0
         elif len(self.state.snake) > prev_len:
-            reward = +10.0
+            reward = +20.0
         else:
             reward = -0.01
             if dist_after < dist_before:
