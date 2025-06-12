@@ -1,16 +1,17 @@
-from __future__ import annotations
-
 from agent.greedy_agent import GreedyAgent
 from engine.game_engine import GameEngine
 from common.game_state import GameState
 from ui.game_ui import GameUI
 
 
-def main():
+def main() -> None:
     state = GameState(30)
-    agent = GreedyAgent()
-    engine = GameEngine(state, agent)
-    GameUI(engine).run()
+    engine = GameEngine(state, GreedyAgent())
+    ui = GameUI(engine)
+
+    while True:
+        engine.tick()
+        ui.draw()
 
 
 if __name__ == "__main__":

@@ -7,8 +7,10 @@ class GameEngine:
         self.state = state
         self.agent = agent
 
-    def tick(self):
+    def tick(self) -> None:
         if self.state.done:
             return
-        d = self.agent.get_move(self.state.grid(), self.state.snake[:], self.state.food)
-        self.state.step(d)
+        direction = self.agent.get_move(
+            self.state.grid(), self.state.snake[:], self.state.food
+        )
+        self.state.step(direction)
