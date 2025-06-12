@@ -1,51 +1,72 @@
+import sys
 import pygame
-
 from engine.game_engine import GameEngine
 
 
 class GameUI:
-    CELL = 32
+    WIN_W = 980
+    WIN_H = 640
     PANEL = 220
     MARGIN = 24
-    FPS = 12
-    CLR_A = (52, 52, 64)
-    CLR_B = (62, 62, 76)
-    CLR_HEAD = (0, 210, 160)
-    CLR_BODY = (0, 170, 130)
-    CLR_FOOD = (240, 70, 70)
-    CLR_BG = (22, 22, 32)
-    CLR_TXT = (240, 240, 240)
+    BORDER = 8
+    FPS = 60
+
+    CLR_BOARD_BORDER = (120, 120, 120)
+    CLR_BG          = (255, 255, 255)
+    CLR_HEAD        = (220,   0,   0)
+    CLR_BODY        = (  0,   0,   0)
+    CLR_FOOD        = (215,   0, 215)
+    CLR_TXT         = (  0,   0,   0)
+    CLR_GRID        = (230, 230, 230)
+    CLR_CHART_LINE  = (220,  40,  40)
 
     def __init__(self, engine: GameEngine):
         pygame.init()
         self.engine = engine
         s = engine.state.size
-        self.w = s * self.CELL + self.PANEL + self.MARGIN * 2
-        self.h = s * self.CELL + self.MARGIN * 2
-        self.screen = pygame.display.set_mode((self.w, self.h))
-        pygame.display.set_caption("Snake ✦")
+
+        board_max_w = self.WIN_W - self.PANEL - self.MARGIN * 3 - self.BORDER * 2
+        board_max_h = self.WIN_H - self.MARGIN * 2 - self.BORDER * 2
+        self.cell = min(board_max_w // s, board_max_h // s)
+        if self.cell < 4:
+            raise ValueError("Board too large for fixed window; increase WIN_W/H or decrease size.")
+
+        self.board_w = self.cell * s
+        self.board_h = self.cell * s
+
+        outer_board_w = self.board_w + self.BORDER * 2
+        outer_board_h = self.board_h + self.BORDER * 2
+
+        self.board_x = self.MARGIN + self.BORDER
+        self.board_y = (self.WIN_H - outer_board_h) // 2 + self.BORDER
+        self.panel_x = self.MARGIN + outer_board_w + self.MARGIN
+
+        self.screen = pygame.display.set_mode((self.WIN_W, self.WIN_H))
+        pygame.display.set_caption("org.grakovne.Snake")
         self.clock = pygame.time.Clock()
-        self.font = pygame.font.SysFont("monospace", 36, bold=True)
-        self.board_x = self.MARGIN
-        self.board_y = self.MARGIN
-        self.panel_x = self.board_x + s * self.CELL + self.MARGIN
+        self.font_big = pygame.font.SysFont("monospace", 64, bold=True)
+        self.font_small = pygame.font.SysFont("monospace", 14)
+
+        self.steps = 0
+        self.size_history = [len(self.engine.state.snake)]
 
     def _draw_board(self):
-        s = self.engine.state.size
         pygame.draw.rect(
             self.screen,
-            (40, 40, 54),
-            pygame.Rect(self.board_x - 4, self.board_y - 4, s * self.CELL + 8, s * self.CELL + 8),
-            border_radius=6,
+            self.CLR_BG,
+            pygame.Rect(self.board_x, self.board_y, self.board_w, self.board_h),
         )
-        for y in range(s):
-            for x in range(s):
-                c = self.CLR_A if (x + y) % 2 == 0 else self.CLR_B
-                pygame.draw.rect(
-                    self.screen,
-                    c,
-                    pygame.Rect(self.board_x + x * self.CELL, self.board_y + y * self.CELL, self.CELL, self.CELL),
-                )
+        pygame.draw.rect(
+            self.screen,
+            self.CLR_BOARD_BORDER,
+            pygame.Rect(
+                self.board_x - self.BORDER,
+                self.board_y - self.BORDER,
+                self.board_w + self.BORDER * 2,
+                self.board_h + self.BORDER * 2,
+            ),
+            width=self.BORDER,
+        )
 
     def _draw_snake(self):
         for i, (x, y) in enumerate(self.engine.state.snake):
@@ -54,12 +75,11 @@ class GameUI:
                 self.screen,
                 c,
                 pygame.Rect(
-                    self.board_x + x * self.CELL + 2,
-                    self.board_y + y * self.CELL + 2,
-                    self.CELL - 4,
-                    self.CELL - 4,
+                    self.board_x + x * self.cell,
+                    self.board_y + y * self.cell,
+                    self.cell,
+                    self.cell,
                 ),
-                border_radius=4,
             )
 
     def _draw_food(self):
@@ -68,26 +88,31 @@ class GameUI:
             self.screen,
             self.CLR_FOOD,
             pygame.Rect(
-                self.board_x + fx * self.CELL + 2,
-                self.board_y + fy * self.CELL + 2,
-                self.CELL - 4,
-                self.CELL - 4,
+                self.board_x + fx * self.cell,
+                self.board_y + fy * self.cell,
+                self.cell,
+                self.cell,
             ),
-            border_radius=4,
         )
 
     def _draw_panel(self):
         pygame.draw.rect(
             self.screen,
-            (45, 45, 60),
-            pygame.Rect(self.panel_x, 0, self.PANEL, self.h),
+            self.CLR_BG,
+            pygame.Rect(self.panel_x, 0, self.PANEL, self.WIN_H),
         )
-        txt = self.font.render(f"Score: {self.engine.state.score}", True, self.CLR_TXT)
-        self.screen.blit(txt, (self.panel_x + 20, 40))
-        if self.engine.state.done:
-            over = self.font.render("GAME OVER", True, (255, 80, 80))
-            r = over.get_rect(center=(self.panel_x + self.PANEL // 2, 120))
-            self.screen.blit(over, r)
+
+        score_txt = f"{self.engine.state.score:08d}"
+        txt = self.font_big.render(score_txt, True, self.CLR_TXT)
+        self.screen.blit(txt, (self.panel_x + 10, 40))
+
+        footer = self.font_small.render(
+            "https://github.com/GrakovNe/snake-python", True, self.CLR_TXT
+        )
+        self.screen.blit(
+            footer,
+            footer.get_rect(bottomleft=(self.panel_x, self.WIN_H - 30)),
+        )
 
     def run(self):
         while True:
@@ -95,7 +120,12 @@ class GameUI:
                 if e.type == pygame.QUIT:
                     pygame.quit()
                     sys.exit()
+
             self.engine.tick()
+
+            self.steps += 1
+            self.size_history.append(len(self.engine.state.snake))
+
             self.screen.fill(self.CLR_BG)
             self._draw_board()
             self._draw_snake()

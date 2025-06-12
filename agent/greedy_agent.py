@@ -1,9 +1,9 @@
 import random
 
 from agent.agent import Agent
-from typing import List, Tuple
+from typing import List
 
-from direction import Direction
+from common.direction import Direction
 
 
 class GreedyAgent(Agent):

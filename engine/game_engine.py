@@ -1,5 +1,5 @@
 from agent.agent import Agent
-from game_state import GameState
+from common.game_state import GameState
 
 
 class GameEngine:

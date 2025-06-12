@@ -1,7 +1,7 @@
 
 from typing import List, Tuple
 import random
-from direction import Direction
+from common.direction import Direction
 
 class GameState:
     def __init__(self, size: int = 20):
