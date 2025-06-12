@@ -87,15 +87,13 @@ for ep in range(1, EPISODES + 1):
         dist_after = abs(snake[0][0] - food[0]) + abs(snake[0][1] - food[1])
 
         if done:
-            reward = -10.0
+            reward = -20.0
         elif len(snake) > prev_len:
-            reward = 20.0
+            reward = +50.0
         else:
-            reward = -0.01
-            if dist_after < dist_before:
-                reward += 0.2
-            elif dist_after > dist_before:
-                reward -= 0.2
+            reward = -0.1
+            delta = dist_before - dist_after
+            reward += delta * 0.5
 
         dist_before = dist_after
 
