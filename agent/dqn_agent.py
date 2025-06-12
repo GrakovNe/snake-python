@@ -1,166 +1,122 @@
-# dqn_agent.py
+# agent/dqn_agent.py
 from __future__ import annotations
-
-import math
-import random
+import random, math
 from collections import deque
 from pathlib import Path
-from typing import Deque, List, Tuple, Optional
+from typing import Deque, Tuple, Optional, List
 
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import torch.nn.functional as F
-
-from agent.agent import Agent
+import torch, torch.nn as nn, torch.nn.functional as F, torch.optim as optim
 from common.direction import Direction
+from agent.agent import Agent
 
 
-class _ConvNet(nn.Module):
-    """CNN для входа (4, 11, 11). Каналы: head, body, food, wall."""
-    def __init__(self, n_actions: int = 4):
+class _Net(nn.Module):
+    """Простейшая CNN-"алекснет": вход 4×N×N."""
+    def __init__(self, board: int, n_actions: int = 4):
         super().__init__()
-        self.conv1 = nn.Conv2d(4, 32, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
-        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
-        self.pool  = nn.AdaptiveAvgPool2d((1, 1))          # совместимо с MPS
-        self.flat  = nn.Flatten()
-        self.fc1   = nn.Linear(64, 128)
-        self.out   = nn.Linear(128, n_actions)
+        self.net = nn.Sequential(
+            nn.Conv2d(4, 32, 3, padding=1), nn.ReLU(),
+            nn.Conv2d(32, 64, 3, padding=1), nn.ReLU(),
+            nn.Flatten(),
+            nn.Linear(64 * board * board, 256), nn.ReLU(),
+            nn.Linear(256, n_actions)
+        )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
-        x = F.relu(self.conv3(x))
-        x = self.pool(x)
-        x = self.flat(x)
-        x = F.relu(self.fc1(x))
-        return self.out(x)
+    def forward(self, x): return self.net(x)
 
 
 class DQNAgent(Agent):
     ACTIONS: Tuple[Direction, ...] = (
-        Direction.UP, Direction.DOWN, Direction.LEFT, Direction.RIGHT,
+        Direction.UP, Direction.DOWN, Direction.LEFT, Direction.RIGHT
     )
-    WINDOW = 11
 
     def __init__(
         self,
         size: int,
         *,
         device: Optional[torch.device] = None,
-        model_path: Optional[str | Path] = None,
-        epsilon_start: float = 1.0,
-        epsilon_final: float = 0.05,
-        epsilon_decay: int = 30_000,
-        gamma: float = 0.99,
-        lr: float = 3e-4,
-        memory_capacity: int = 100_000,
-        batch_size: int = 256,
-    ) -> None:
+        lr: float = 2e-4,
+        gamma: float = .99,
+        batch_size: int = 128,
+        memory_capacity: int = 30_000,
+        eps_start: float = 1.0,
+        eps_final: float = 0.05,
+        eps_decay_steps: int = 25_000,
+    ):
         self.size = size
-        self.device = device or (
-            torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-        )
+        self.device = device or torch.device("cpu")
+        self.policy = _Net(size).to(self.device)
+        self.target = _Net(size).to(self.device)
+        self.target.load_state_dict(self.policy.state_dict())
+        self.target.eval()
 
-        self.policy_net = _ConvNet().to(self.device)
-        self.target_net = _ConvNet().to(self.device)
-        self.target_net.load_state_dict(self.policy_net.state_dict())
-        self.target_net.eval()
+        self.opt = optim.Adam(self.policy.parameters(), lr=lr)
+        self.memory: Deque = deque(maxlen=memory_capacity)
+        self.batch, self.gamma = batch_size, gamma
+        self.sync_every = 1_000
+        self.steps = 0
 
-        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr)
-        self.memory: Deque[Tuple[torch.Tensor, int, float, torch.Tensor, bool]] = deque(maxlen=memory_capacity)
+        self.eps_start, self.eps_final, self.eps_decay = eps_start, eps_final, eps_decay_steps
 
-        self.epsilon_start = epsilon_start
-        self.epsilon_final = epsilon_final
-        self.epsilon_decay = epsilon_decay
-        self._steps_done   = 0
-        self.gamma         = gamma
-        self.batch_size    = batch_size
-        self.sync_every    = 1_000
+    # ε-жадная стратегия
+    def _eps(self):
+        t = min(1.0, self.steps / self.eps_decay)
+        return self.eps_final + (self.eps_start - self.eps_final) * (1.0 - t)
 
-        if model_path:
-            self.load(model_path)
-
-    def get_move(self, grid, snake: List[Tuple[int, int]], food: Tuple[int, int]):
+    def get_move(self, grid, snake, food):
         state = self._encode_state(grid, snake, food)
-
-        eps_threshold = self._current_epsilon()
-        self._steps_done += 1
-        if random.random() < eps_threshold:
+        if random.random() < self._eps():
             idx = random.randrange(len(self.ACTIONS))
         else:
             with torch.no_grad():
-                idx = int(self.policy_net(state).argmax(dim=1).item())
+                idx = int(self.policy(state).argmax(1).item())
         return self.ACTIONS[idx]
 
-    def remember(
-        self,
-        state: torch.Tensor,
-        action_idx: int,
-        reward: float,
-        next_state: torch.Tensor,
-        done: bool,
-    ) -> None:
-        self.memory.append((state, action_idx, reward, next_state, done))
+    # буфер
+    def remember(self, *transition): self.memory.append(transition)
 
-    def train_step(self) -> None:
-        if len(self.memory) < self.batch_size:
+    # шаг обучения
+    def train_step(self):
+        if len(self.memory) < self.batch:  # ждём, пока буфер наполнится
             return
+        batch = random.sample(self.memory, self.batch)
+        s, a, r, s2, d = zip(*batch)
+        s, s2 = torch.cat(s), torch.cat(s2)
+        a = torch.tensor(a, device=self.device).unsqueeze(1)
+        r = torch.tensor(r, dtype=torch.float32, device=self.device).unsqueeze(1)
+        d = torch.tensor(d, dtype=torch.bool, device=self.device).unsqueeze(1)
 
-        batch = random.sample(self.memory, self.batch_size)
-        states, actions, rewards, next_states, dones = zip(*batch)
-
-        states      = torch.cat(states).to(self.device)
-        next_states = torch.cat(next_states).to(self.device)
-        actions     = torch.tensor(actions, device=self.device).unsqueeze(1)
-        rewards     = torch.tensor(rewards, dtype=torch.float32, device=self.device).unsqueeze(1)
-        dones       = torch.tensor(dones, dtype=torch.bool, device=self.device).unsqueeze(1)
-
-        q_values = self.policy_net(states).gather(1, actions)
+        q = self.policy(s).gather(1, a)
         with torch.no_grad():
-            max_next_q = self.target_net(next_states).max(1, keepdim=True)[0]
-            targets    = rewards + (~dones) * self.gamma * max_next_q
+            q_next = self.target(s2).max(1, True)[0]
+            target = r + (~d) * self.gamma * q_next
+        loss = F.smooth_l1_loss(q, target)
 
-        loss = F.smooth_l1_loss(q_values, targets)
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
+        self.opt.zero_grad(); loss.backward(); self.opt.step()
 
-        if self._steps_done % self.sync_every == 0:
-            self.target_net.load_state_dict(self.policy_net.state_dict())
+        if self.steps % self.sync_every == 0:
+            self.target.load_state_dict(self.policy.state_dict())
 
-    def save(self, path: str | Path) -> None:
-        torch.save(self.policy_net.state_dict(), Path(path))
+    # agent/dqn_agent.py  ▸  _encode_state
+    def _encode_state(self, grid, snake, food):
+        s = torch.zeros((1, 4, self.size, self.size), device=self.device)
 
-    def load(self, path: str | Path) -> None:
-        state_dict = torch.load(Path(path), map_location=self.device)
-        self.policy_net.load_state_dict(state_dict)
-        self.target_net.load_state_dict(state_dict)
-
-    def _current_epsilon(self) -> float:
-        frac = max(0.0, 1 - self._steps_done / self.epsilon_decay)
-        return self.epsilon_final + (self.epsilon_start - self.epsilon_final) * frac
-
-    def _encode_state(
-        self, grid, snake: List[Tuple[int, int]], food: Tuple[int, int]
-    ) -> torch.Tensor:
-        W   = self.WINDOW
-        R   = W // 2
+        # 0-й канал — голова
         hx, hy = snake[0]
-        state = torch.zeros((1, 4, W, W), dtype=torch.float32, device=self.device)
+        s[0, 0, hy, hx] = 1.0
 
-        for dy in range(-R, R + 1):
-            for dx in range(-R, R + 1):
-                gx, gy = hx + dx, hy + dy
-                ix, iy = dx + R, dy + R
-                if gx < 0 or gx >= self.size or gy < 0 or gy >= self.size:
-                    state[0, 3, iy, ix] = 1.0          # wall
-                else:
-                    if (gx, gy) == (hx, hy):
-                        state[0, 0, iy, ix] = 1.0      # head
-                    elif (gx, gy) in snake[1:]:
-                        state[0, 1, iy, ix] = 1.0      # body
-                    elif (gx, gy) == food:
-                        state[0, 2, iy, ix] = 1.0      # food
-        return state
+        # 1-й канал — тело
+        for x, y in snake[1:]:
+            s[0, 1, y, x] = 1.0
+
+        # 2-й канал — еда
+        fx, fy = food
+        s[0, 2, fy, fx] = 1.0
+
+        # 3-й канал — стены/барьеры
+        for y, row in enumerate(grid):
+            for x, cell in enumerate(row):
+                if cell:  # всё, что не «пусто» → стена
+                    s[0, 3, y, x] = 1.0
+
+        return s

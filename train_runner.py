@@ -1,117 +1,65 @@
-#!/usr/bin/env python3
 # train_runner.py
-# ------------------------------------------------------------
-# RL-обучение «Змейки» (без графиков) — полный скрипт
-# ------------------------------------------------------------
-import os
-import random
+#!/usr/bin/env python3
+import random, numpy as np, torch
 from collections import deque
 from pathlib import Path
-
-import torch
-import numpy as np
 
 from agent.dqn_agent import DQNAgent
 from engine.game_engine import GameEngine
 from common.game_state import GameState
-from common.direction import Direction
 
-# ────────────── гиперпараметры ────────────── #
-BOARD_SIZE       = 32
-EPISODES         = 10_000
-MAX_STEPS_EP     = 1_000
-SAVE_EVERY       = 200
-STUCK_LIMIT      = 200          # прерывать эпизод, если долго нет еды
-TRAIN_EVERY      = 1
+# ───── параметры ─────
+BOARD   = 12
+EPISODES, MAX_STEPS = 6_000, 500
+STEP_PEN, FOOD_REW, DEATH_PEN = -0.01, 1.0, -1.0
+STUCK_LIMIT = 100
 
-FOOD_REWARD      = 500.0
-STEP_PENALTY     = -0.10
-DEATH_PENALTY    = -20.0
-
-EPS_START        = 1.0
-EPS_END          = 0.05
-EPS_DECAY_STEPS  = 15_000       # шагов до минимального ε
-# ------------------------------------------- #
-
-WEIGHTS_DIR = Path("weights")
-WEIGHTS_DIR.mkdir(exist_ok=True)
-
-device = (
-    torch.device("mps")  if torch.backends.mps.is_available() else
-    torch.device("cuda") if torch.cuda.is_available() else
-    torch.device("cpu")
-)
+device = (torch.device("mps") if torch.backends.mps.is_available()
+          else torch.device("cuda") if torch.cuda.is_available()
+          else torch.device("cpu"))
 print("Device:", device)
 
-agent = DQNAgent(size=BOARD_SIZE, device=device)
-env   = GameEngine(GameState(size=BOARD_SIZE), agent)
+agent = DQNAgent(size=BOARD, device=device)
+env   = GameEngine(GameState(BOARD), agent)
 
-scores       = deque(maxlen=100)
-epsilon      = EPS_START
-global_step  = 0
+scores = deque(maxlen=100)
 
-for ep in range(1, EPISODES + 1):
+for ep in range(1, EPISODES+1):
     grid, snake, food = env.reset()
-    state         = agent._encode_state(grid, snake, food)
-    total_reward  = 0.0
-    steps         = 0
-    steps_no_food = 0
-    head_pos      = tuple(snake[0])
-    dist_before   = abs(head_pos[0] - food[0]) + abs(head_pos[1] - food[1])
+    state, tot, nofood = agent._encode_state(grid, snake, food), 0.0, 0
 
-    for _ in range(MAX_STEPS_EP):
-        # ε-жадное действие
-        if random.random() < epsilon:
-            move = random.choice(agent.ACTIONS)
-        else:
-            move = agent.get_move(grid, snake, food)
-
-        # запоминаем координаты еды ДО хода
-        prev_food_pos = tuple(food)
+    for t in range(MAX_STEPS):
+        move = agent.get_move(grid, snake, food)
+        prev_food = food
 
         grid, snake, food, done = env.step(move)
         next_state = agent._encode_state(grid, snake, food)
 
-        # вычисление награды
-        head_pos    = tuple(snake[0])
-        ate_food    = head_pos == prev_food_pos
-        dist_after  = abs(head_pos[0] - food[0]) + abs(head_pos[1] - food[1])
-
         if done:
-            reward = DEATH_PENALTY
-        elif ate_food:
-            reward = FOOD_REWARD
-            steps_no_food = 0
+            rew = DEATH_PEN
+        elif snake[0] == prev_food:
+            rew, nofood = FOOD_REW, 0
         else:
-            delta  = dist_before - dist_after
-            reward = STEP_PENALTY + 0.5 * delta
-            steps_no_food += 1
+            rew, nofood = STEP_PEN, nofood + 1
 
-        dist_before = dist_after
+        agent.remember(state, agent.ACTIONS.index(move), rew, next_state, done)
+        agent.steps += 1
+        agent.train_step()
 
-        agent.remember(state, agent.ACTIONS.index(move), reward, next_state, done)
-        if agent._steps_done % TRAIN_EVERY == 0:
-            agent.train_step()
+        state, tot = next_state, tot + rew
+        if done or nofood > STUCK_LIMIT: break
 
-        state         = next_state
-        total_reward += reward
-        steps        += 1
-        global_step  += 1
+    scores.append(tot)
+    print(f"Ep {ep:4} | steps {t+1:3} | len {len(snake):2} | "
+          f"score {tot:6.2f} | avg {np.mean(scores):6.2f} | ε={agent._eps():.3f}")
 
-        # линейное затухание ε
-        epsilon = max(
-            EPS_END,
-            EPS_START - global_step / EPS_DECAY_STEPS * (EPS_START - EPS_END)
-        )
+    # curriculum: расширяем поле
+    if ep == 800:
+        BOARD = 24
+        env = GameEngine(GameState(BOARD), agent)
+        agent.size = BOARD
+        print("→ поле увеличено до 24×24\n")
 
-        if done or steps_no_food > STUCK_LIMIT:
-            break
-
-    scores.append(total_reward)
-    avg_score = float(np.mean(scores))
-
-    print(f"Episode {ep:5}: steps={steps:4} len={len(snake):3} "
-          f"score={total_reward:7.2f}  avg={avg_score:7.2f}  ε={epsilon:.3f}")
-
-    if ep % SAVE_EVERY == 0:
-        agent.save(WEIGHTS_DIR / f"snake_{ep:05}.pt")
+    if ep % 300 == 0:
+        Path("weights").mkdir(exist_ok=True)
+        agent.save(f"weights/snake_{BOARD}_{ep:05}.pt")
